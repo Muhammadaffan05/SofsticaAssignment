@@ -1,0 +1,92 @@
+name: GitHub Stars Crawler
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 2 * * *"   # runs daily at 02:00 UTC
+  workflow_dispatch:        # allows manual trigger from GitHub UI
+
+jobs:
+  crawl:
+    name: Crawl GitHub Stars
+    runs-on: ubuntu-latest
+    timeout-minutes: 360    # 6 hours max (100k repos takes ~30-60 min)
+
+    # ------------------------------------------------------------------ #
+    #  Postgres service container                                          #
+    # ------------------------------------------------------------------ #
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB:       github_crawler
+          POSTGRES_USER:     crawler
+          POSTGRES_PASSWORD: crawler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # ------------------------------------------------------------------ #
+    #  Shared environment variables                                        #
+    # ------------------------------------------------------------------ #
+    env:
+      DATABASE_URL: postgresql://crawler:crawler@localhost:5432/github_crawler
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # default token, no extra secrets needed
+      DUMP_OUTPUT:  repositories.csv
+
+    steps:
+      # ---------------------------------------------------------------- #
+      #  1. Checkout                                                       #
+      # ---------------------------------------------------------------- #
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------- #
+      #  2. Setup Python                                                   #
+      # ---------------------------------------------------------------- #
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # ---------------------------------------------------------------- #
+      #  3. Install dependencies                                           #
+      # ---------------------------------------------------------------- #
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ---------------------------------------------------------------- #
+      #  4. Setup Postgres schema                                          #
+      # ---------------------------------------------------------------- #
+      - name: setup-postgres
+        run: python scripts/setup_db.py
+
+      # ---------------------------------------------------------------- #
+      #  5. Crawl stars                                                    #
+      # ---------------------------------------------------------------- #
+      - name: crawl-stars
+        run: python scripts/crawl_stars.py
+        env:
+          CRAWL_TARGET: 100000
+
+      # ---------------------------------------------------------------- #
+      #  6. Dump database to CSV                                           #
+      # ---------------------------------------------------------------- #
+      - name: Dump database to CSV
+        run: python scripts/dump_db.py
+
+      # ---------------------------------------------------------------- #
+      #  7. Upload CSV as artifact                                         #
+      # ---------------------------------------------------------------- #
+      - name: Upload repositories CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repositories-${{ github.run_id }}
+          path: repositories.csv
+          retention-days: 30
